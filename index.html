@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crucigrama — Libro de Mormón</title>
+  <meta name="description" content="Crucigrama interactivo (Libro de Mormón). Compartible vía GitHub Pages/Netlify." />
+  <style>
+    :root { --cell: 36px; --border:#e5e7eb; --fg:#111827; --muted:#6b7280; --accent:#2563eb; --bg:#ffffff; --bg2:#f9fafb; --ok:#065f46; --err:#b91c1c; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, "Apple Color Emoji","Segoe UI Emoji"; color: var(--fg); background: #fff; }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: 1fr; gap: 16px; }
+    @media (min-width: 1024px){ .wrap { grid-template-columns: 1fr 1fr; gap: 24px; } }
+    h1 { font-size: 20px; margin: 0; }
+    h2 { font-size: 18px; margin: 8px 0; }
+    h3 { font-size: 14px; margin: 8px 0; }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; gap:8px; flex-wrap:wrap; }
+    .btn { padding:8px 12px; border-radius:10px; border:1px solid var(--border); background:#f3f4f6; cursor:pointer; font-size:14px; }
+    .btn.primary { background:#2563eb; color:#fff; border-color:#1d4ed8; }
+    .btn:hover { filter: brightness(0.97); }
+    .pill { padding:4px 8px; background:#eef2ff; color:#1e3a8a; border-radius:999px; font-size:13px; border:1px solid #c7d2fe; }
+    .grid { display: grid; border:1px solid var(--border); width: max-content; }
+    .cell { width: var(--cell); height: var(--cell); display:flex; align-items:center; justify-content:center; border:1px solid var(--border); user-select:none; position: relative; }
+    .cell.block { background:#111827; }
+    .cell .val { font-weight:600; font-size: 18px; }
+    .cell .num { position:absolute; top:2px; left:4px; font-size: 10px; color:#6b7280; }
+    .active-word { outline: 2px solid #93c5fd; }
+    .active-cell { outline: 2px solid #2563eb; }
+    .ok { color: #065f46; }
+    .err { color: #b91c1c; }
+    .status { margin-top:8px; font-size:14px; color:#374151; }
+    .panel { background: var(--bg2); border:1px solid var(--border); border-radius:12px; padding:12px; }
+    .clues { display:grid; grid-template-columns: 1fr; gap:16px; }
+    @media (min-width: 768px){ .clues { grid-template-columns: 1fr 1fr; } }
+    .clue { padding:8px; border-radius:8px; border:1px solid transparent; cursor:pointer; }
+    .clue.active { border-color:#93c5fd; background:#eff6ff; }
+    .muted { color: var(--muted); }
+    .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.4); display:flex; align-items:center; justify-content:center; }
+    .modal { background:#fff; border-radius:16px; box-shadow:0 10px 40px rgba(0,0,0,.15); width: 95vw; max-width: 640px; padding:16px; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); font-size:14px; }
+    .kbd { padding:0 4px; border:1px solid var(--border); border-radius:6px; }
+    .row { display:flex; align-items:center; gap:8px; }
+  </style>
+  <!-- React + ReactDOM + Babel (for in-browser JSX) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect, useRef } = React;
+
+    function sanitize(raw) {
+      return raw.toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Z]/g, "");
+    }
+    function rngShuffle(arr){ const a=[...arr]; for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a; }
+    function formatSeconds(total){ const mm=String(Math.floor(total/60)).padStart(2,"0"); const ss=String(total%60).padStart(2,"0"); return mm+":"+ss; }
+    const STORAGE_KEY="BOM_XWORD_RECORDS_V1";
+    function loadRecords(){ try{ const raw=localStorage.getItem(STORAGE_KEY); return raw?JSON.parse(raw):[];}catch{return [];} }
+    function saveRecords(r){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(r)); }catch{} }
+    function bestForSize(recs, size){ const xs=recs.filter(r=>r.size===size); if(xs.length===0) return null; return xs.reduce((a,b)=>a.seconds<=b.seconds?a:b); }
+
+    const WORD_BANK = [
+      { answer: "NEFI", clue: "Primer profeta y narrador al inicio del libro." },
+      { answer: "LAMAN", clue: "Hijo mayor de Lehi, hermano de Nefi." },
+      { answer: "LEMUEL", clue: "Hermano de Nefi que murmuraba junto con Lamán." },
+      { answer: "LIAHONA", clue: "Instrumento dado a Lehi para guiar en el desierto." },
+      { answer: "ZARAHEMLA", clue: "Ciudad principal donde gobernaron los jueces." },
+      { answer: "HELAMAN", clue: "Líder de los dos mil jóvenes guerreros." },
+      { answer: "MOSIAH", clue: "Rey que tradujo registros antiguos." },
+      { answer: "MORONI", clue: "Último profeta que enterró las planchas." },
+      { answer: "MORMON", clue: "Historiador y compilador del registro." },
+      { answer: "CUMORAH", clue: "Colina donde se ocultaron las planchas." },
+      { answer: "GADIANTON", clue: "Líder de las combinaciones secretas." },
+      { answer: "ABINADI", clue: "Profeta que testificó ante el rey Noé." },
+      { answer: "AMMON", clue: "Misionero que defendió los rebaños del rey Lamoni." },
+      { answer: "ZORAMITAS", clue: "Pueblo que oraba en el Rameúmptom." },
+      { answer: "JAREDITAS", clue: "Pueblo antiguo que viajó en barcos al nuevo mundo." },
+      { answer: "DESERET", clue: "Palabra jaredita para 'abeja'." },
+      { answer: "TEANCUM", clue: "Guerrero nefita que dio muerte a Amalickía." },
+      { answer: "AMULEK", clue: "Compañero de predicación de Alma en Ammoníah." },
+      { answer: "OMNI", clue: "Libro breve con varios autores." },
+      { answer: "ENOS", clue: "Profeta cuya oración fue respondida tras luchar todo el día." },
+      { answer: "JACOB", clue: "Hermano de Nefi y autor de un libro." },
+      { answer: "ETHER", clue: "Profeta que narra la historia jaredita." },
+      { answer: "ALMA", clue: "Profeta y juez que escribió extensamente." },
+      { answer: "LEHI", clue: "Profeta que salió de Jerusalén con su familia." },
+      { answer: "SAM", clue: "Hermano leal de Nefi." },
+      { answer: "SARIAH", clue: "Esposa de Lehi y madre de Nefi." },
+      { answer: "LAMONI", clue: "Rey lamanita convertido por Ammon." },
+      { answer: "AMMONIHAH", clue: "Ciudad donde Alma y Amulek predicaron poderosamente." },
+      { answer: "ZEEZROM", clue: "Abogado que debatió con Alma y Amulek." },
+      { answer: "KORIHOR", clue: "Anticristo que negó a Dios y pidió señal." },
+      { answer: "SHEREM", clue: "Anticristo que disputó con Jacob." },
+      { answer: "GIDEON", clue: "Valiente nefita y nombre de una ciudad." },
+      { answer: "SIDON", clue: "Río principal mencionado en las guerras." },
+      { answer: "RIPLAH", clue: "Colina clave en batallas nefitas." },
+      { answer: "JERSHON", clue: "Tierra dada a los anti-nefi-lehitas." },
+      { answer: "ANTIONUM", clue: "Tierra de los zoramitas." },
+      { answer: "RAMEUMPTOM", clue: "Torrecilla donde oraban los zoramitas." },
+      { answer: "HAGOTH", clue: "Constructor de barcos que partió hacia el norte." },
+      { answer: "SHIBLON", clue: "Hijo de Alma que recibió consejo sobre templanza." },
+      { answer: "CORIANTON", clue: "Hijo de Alma que abandonó su ministerio y se arrepintió." },
+      { answer: "PAHORAN", clue: "Juez superior durante las guerras." },
+      { answer: "PACUMENI", clue: "Hijo de Pahorán que llegó a ser juez superior." },
+      { answer: "LACHONEUS", clue: "Gobernante nefita que resistió a los ladrones." },
+      { answer: "GIDGIDDONI", clue: "Comandante justo contra los ladrones de Gadiantón." },
+      { answer: "GIDDIANHI", clue: "Jefe de los ladrones que amenazó a los nefitas." },
+      { answer: "KISHKUMEN", clue: "Asesino ligado a las combinaciones secretas." },
+      { answer: "ANTION", clue: "Medida de oro en la moneda nefita." },
+      { answer: "SENINE", clue: "Unidad monetaria nefita (valor estándar)." },
+      { answer: "SEON", clue: "Unidad monetaria nefita (dos senines)." },
+      { answer: "SHUM", clue: "Unidad monetaria nefita (seis senines)." },
+      { answer: "MANTI", clue: "Ciudad estratégica cercana al río Sidón." },
+      { answer: "NEPHIHAH", clue: "Ciudad construida por los nefitas para defensa." },
+      { answer: "ABUNDANCIA", clue: "Tierra también llamada Bountiful." },
+      { answer: "CUMENI", clue: "Ciudad capturada y recuperada en las guerras." },
+      { answer: "MORIANTON", clue: "Nombre de un líder y de una ciudad en disputas fronterizas." },
+      { answer: "MORIANCUMER", clue: "Lugar asociado al hermano de Jared." },
+      { answer: "CORIANTUMR", clue: "Último rey jaredita mencionado por los nefitas." },
+      { answer: "SHULE", clue: "Rey jaredita justo, hijo de Kib." },
+      { answer: "ORIHAH", clue: "Primer rey jaredita, hijo de Jared." },
+      { answer: "SHARED", clue: "Rey jaredita que luchó contra Coriantumr." },
+      { answer: "OMER", clue: "Rey jaredita que huyó por revelación." },
+      { answer: "MAHONRI", clue: "Nombre revelado del hermano de Jared." },
+      { answer: "ZORAM", clue: "Siervo que salió de Jerusalén con los lehitas." },
+      { answer: "ANTINEPHILEHI", clue: "Nombre del pueblo pacífico que depuso las armas." },
+    ].map(x=>({answer:sanitize(x.answer), clue:x.clue}));
+
+    function makeEmptyGrid(size){ return Array.from({length:size},()=>Array.from({length:size},()=>null)); }
+    function inBounds(size,r,c){ return r>=0 && c>=0 && r<size && c<size; }
+    function canPlaceWord(grid,size,word,row,col,dir){
+      const dr=dir==="down"?1:0, dc=dir==="across"?1:0;
+      const endR=row+dr*(word.length-1), endC=col+dc*(word.length-1);
+      if(!inBounds(size,row,col)||!inBounds(size,endR,endC)) return false;
+      for(let k=0;k<word.length;k++){
+        const r=row+dr*k, c=col+dc*k; const cell=grid[r][c];
+        if(cell && cell!==word[k]) return false;
+        if(!cell){
+          if(dir==="across"){ if(inBounds(size,r-1,c)&&grid[r-1][c]) return false; if(inBounds(size,r+1,c)&&grid[r+1][c]) return false; }
+          else { if(inBounds(size,r,c-1)&&grid[r][c-1]) return false; if(inBounds(size,r,c+1)&&grid[r][c+1]) return false; }
+        }
+      }
+      const br=row-(dir==="down"?1:0), bc=col-(dir==="across"?1:0);
+      const ar=endR+(dir==="down"?1:0), ac=endC+(dir==="across"?1:0);
+      if(inBounds(size,br,bc)&&grid[br][bc]) return false;
+      if(inBounds(size,ar,ac)&&grid[ar][ac]) return false;
+      return true;
+    }
+    function placeWord(grid, word, row, col, dir){
+      const dr=dir==="down"?1:0, dc=dir==="across"?1:0;
+      for(let k=0;k<word.length;k++){ grid[row+dr*k][col+dc*k]=word[k]; }
+    }
+    function findAllLetterPositions(grid,size,letter){
+      const list=[]; for(let r=0;r<size;r++){ for(let c=0;c<size;c++){ if(grid[r][c]===letter) list.push({r,c}); } } return list;
+    }
+
+    function generateCrossword(size, entries, maxWords=18){
+      const shuffled=rngShuffle(entries).slice(0, Math.min(entries.length,80));
+      const grid=makeEmptyGrid(size);
+      const placed=[];
+
+      const seed=[...shuffled].sort((a,b)=>b.answer.length-a.answer.length)[0];
+      const mid=Math.floor(size/2); const startCol=Math.max(0, Math.floor((size-seed.answer.length)/2));
+      placeWord(grid, seed.answer, mid, startCol, "across");
+      placed.push({ id:0, dir:"across", row:mid, col:startCol, answer:seed.answer, clue:seed.clue });
+      let idCounter=1;
+      for(const entry of shuffled.filter(e=>e!==seed)){
+        if(placed.length>=maxWords) break;
+        const word=entry.answer; const candidates=[];
+        for(let i=0;i<word.length;i++){
+          const letter=word[i]; const positions=findAllLetterPositions(grid,size,letter);
+          for(const pos of positions){
+            const ar=pos.r, ac=pos.c-i; if(canPlaceWord(grid,size,word,ar,ac,"across")) candidates.push({dir:"across",row:ar,col:ac});
+            const dr=pos.r-i, dc=pos.c; if(canPlaceWord(grid,size,word,dr,dc,"down")) candidates.push({dir:"down",row:dr,col:dc});
+          }
+        }
+        const shuffledC=rngShuffle(candidates);
+        if(shuffledC.length>0){
+          const p=shuffledC[0]; placeWord(grid, word, p.row, p.col, p.dir);
+          placed.push({ id:idCounter++, dir:p.dir, row:p.row, col:p.col, answer:word, clue:entry.clue });
+          continue;
+        }
+        let done=false;
+        for(let r=0;r<size && !done;r++){
+          for(let c=0;c<size && !done;c++){
+            for(const d of ["across","down"]){
+              if(canPlaceWord(grid,size,word,r,c,d)){ placeWord(grid,word,r,c,d); placed.push({ id:idCounter++, dir:d, row:r, col:c, answer:word, clue:entry.clue }); done=true; break; }
+            }
+          }
+        }
+      }
+
+      const cells=[]; for(let r=0;r<size;r++){ for(let c=0;c<size;c++){ cells.push({r,c, solution:grid[r][c], value:"", block:grid[r][c]==null}); } }
+      const wordCells=new Map(); const key=(r,c)=>`${r},${c}`;
+      placed.forEach(w=>{ const dr=w.dir==="down"?1:0, dc=w.dir==="across"?1:0; for(let k=0;k<w.answer.length;k++){ const r=w.row+dr*k, c=w.col+dc*k; const kk=key(r,c); const obj=wordCells.get(kk)||{}; obj[w.dir]=w.id; wordCells.set(kk,obj); }});
+      let number=1; const acrossClues=[], downClues=[]; const idToNumber=new Map();
+      placed.forEach(w=>{
+        const dr=w.dir==="down"?1:0, dc=w.dir==="across"?1:0;
+        const br=w.row-dr, bc=w.col-dc;
+        const isStart=!inBounds(size,br,bc)||grid[br][bc]==null;
+        if(isStart){ idToNumber.set(w.id, number); (w.dir==="across"?acrossClues:downClues).push({number, clue:w.clue, id:w.id, answer:w.answer}); number++; }
+      });
+
+      return { size, cells, placed, idToNumber, acrossClues: acrossClues.sort((a,b)=>a.number-b.number), downClues: downClues.sort((a,b)=>a.number-b.number), wordCells };
+    }
+
+    function useTimer(running){
+      const [seconds, setSeconds] = React.useState(0);
+      React.useEffect(()=>{ if(!running) return; const t=setInterval(()=>setSeconds(s=>s+1),1000); return ()=>clearInterval(t); },[running]);
+      return { seconds, label: formatSeconds(seconds), reset: ()=>setSeconds(0), setSeconds };
+    }
+
+    function App(){
+      const [size, setSize] = React.useState(13);
+      const [puzzle, setPuzzle] = React.useState(()=>generateCrossword(13, WORD_BANK, 18));
+      const [activeDir, setActiveDir] = React.useState("across");
+      const [activeCell, setActiveCell] = React.useState(null);
+      const [activeWordId, setActiveWordId] = React.useState(null);
+      const [showErrors, setShowErrors] = React.useState(false);
+      const [running, setRunning] = React.useState(true);
+      const timer = useTimer(running);
+      const [records, setRecords] = React.useState(loadRecords());
+      const [showRecords, setShowRecords] = React.useState(false);
+      const [lastResult, setLastResult] = React.useState(null);
+
+      React.useEffect(()=>{ if(puzzle.acrossClues[0]) setActiveWordId(puzzle.acrossClues[0].id); },[]);
+
+      function cellIndex(r,c){ return r*puzzle.size + c; }
+      function getCell(idx){ return puzzle.cells[idx]; }
+      function getWordCells(w){ if(!w) return []; const list=[]; const dr=w.dir==="down"?1:0, dc=w.dir==="across"?1:0; for(let k=0;k<w.answer.length;k++) list.push(cellIndex(w.row+dr*k, w.col+dc*k)); return list; }
+      const activeWord = React.useMemo(()=> (activeWordId==null?null:puzzle.placed.find(w=>w.id===activeWordId)||null), [activeWordId, puzzle]);
+      const activeWordCells = React.useMemo(()=> getWordCells(activeWord), [activeWord]);
+
+      function focusCell(idx){
+        setActiveCell(idx);
+        const cell = puzzle.cells[idx];
+        const mapping = puzzle.wordCells.get(`${cell.r},${cell.c}`) || {};
+        const dirId = mapping[activeDir] ?? mapping[activeDir==="across"?"down":"across"];
+        if(dirId!=null) setActiveWordId(dirId);
+      }
+      function toggleDir(){ setActiveDir(d=>d==="across"?"down":"across"); }
+
+      function onKeyDown(e){
+        if(!activeWord) return;
+        const idx = activeCell ?? activeWordCells[0];
+        const pos = activeWordCells.indexOf(idx);
+        const move = (d)=>{ const ni = activeWordCells[Math.min(Math.max(pos+d,0), activeWordCells.length-1)]; setActiveCell(ni); };
+
+        if(e.key==="Tab"){ e.preventDefault(); const list = activeDir==="across"?puzzle.acrossClues:puzzle.downClues; const ii=list.findIndex(c=>c.id===activeWordId); const next=list[(ii+1)%list.length]; setActiveWordId(next.id); setActiveCell(getWordCells(puzzle.placed.find(w=>w.id===next.id))[0]); return; }
+        if(e.key===" "){ e.preventDefault(); toggleDir(); return; }
+        if(e.key==="Backspace"){ e.preventDefault(); const cell=getCell(idx); cell.value=""; move(-1); setPuzzle({...puzzle}); return; }
+
+        if(["ArrowLeft","ArrowUp","ArrowRight","ArrowDown"].includes(e.key)){
+          e.preventDefault(); const horiz = e.key==="ArrowLeft"||e.key==="ArrowRight"; const desired = horiz?"across":"down"; if(activeDir!==desired) setActiveDir(desired);
+          move(e.key==="ArrowLeft"||e.key==="ArrowUp"?-1:+1); return;
+        }
+        const ch = e.key.toUpperCase();
+        if(/^[A-Z]$/.test(ch)){
+          const cell=getCell(idx);
+          if(!cell.block){ cell.value=ch; setPuzzle({...puzzle}); move(+1); }
+        }
+      }
+
+      React.useEffect(()=>{ const h=(e)=>onKeyDown(e); window.addEventListener("keydown", h); return ()=>window.removeEventListener("keydown", h); });
+
+      function clearAll(){ puzzle.cells.forEach(c=>c.value=""); setShowErrors(false); setPuzzle({...puzzle}); }
+      function reveal(type){
+        if(!activeWord) return;
+        if(type==="letter"){ const idx=activeCell ?? activeWordCells[0]; const cell=getCell(idx); cell.value = cell.solution ?? ""; }
+        else if(type==="word"){ for(const i of activeWordCells){ const cell=getCell(i); cell.value = cell.solution ?? ""; } }
+        else if(type==="puzzle"){ puzzle.cells.forEach(c=>c.value=c.solution ?? ""); }
+        setPuzzle({...puzzle});
+      }
+      function checkErrors(){ setShowErrors(true); }
+      function isSolved(){ return puzzle.cells.every(c => (c.block?true: c.value===c.solution)); }
+
+      function rebuild(newSize=size){
+        const next = generateCrossword(newSize, WORD_BANK, 18);
+        setSize(newSize); setPuzzle(next); setActiveDir("across"); setActiveCell(null); setActiveWordId(next.acrossClues[0]?.id ?? next.downClues[0]?.id ?? null);
+        setShowErrors(false); timer.reset(); setRunning(true); setLastResult(null);
+      }
+
+      const solved = isSolved(); const solvedRef = React.useRef(false);
+      React.useEffect(()=>{
+        if(solved && !solvedRef.current){
+          solvedRef.current = true; setRunning(false);
+          const rec = { seconds: timer.seconds, date: new Date().toISOString(), size: puzzle.size, words: puzzle.acrossClues.length + puzzle.downClues.length };
+          const currentBest = bestForSize(records, puzzle.size); const isBest = !currentBest || rec.seconds < currentBest.seconds;
+          const updated = [rec, ...records].sort((a,b)=>a.seconds-b.seconds).slice(0,50);
+          setRecords(updated); saveRecords(updated); setLastResult({rec, isBest}); setShowRecords(true);
+        }
+        if(!solved){ solvedRef.current = false; }
+      },[solved]);
+
+      function cellNumber(cell){
+        const mapping = puzzle.wordCells.get(`${cell.r},${cell.c}`) || {};
+        const anyId = mapping["across"] ?? mapping["down"];
+        if(anyId==null) return null;
+        const w = puzzle.placed.find(x=>x.id===anyId);
+        const startAcross = w && w.dir==="across" && cell.c===w.col && cell.r===w.row;
+        const alt = puzzle.placed.find(x=>x.dir!==(w?.dir) && x.row===cell.r && x.col===cell.c);
+        const startDown = alt && alt.dir==="down";
+        const num = (startAcross? puzzle.idToNumber.get(w.id) : null) ?? (startDown? puzzle.idToNumber.get(alt.id) : null);
+        return num || null;
+      }
+
+      return (
+        <div className="wrap">
+          <div>
+            <div className="toolbar">
+              <div className="row"><h1>Crucigrama — Libro de Mormón (MVP)</h1></div>
+              <div className="row">
+                <span className="pill">⏱ {timer.label}</span>
+                <button className="btn" onClick={()=>setRunning(r=>!r)}>{running?"Pausar":"Reanudar"}</button>
+                <button className="btn" onClick={()=>setShowRecords(true)}>🏆 Récords</button>
+              </div>
+            </div>
+
+            <div className="row" style={{gap: '8px', flexWrap:'wrap', marginBottom:'12px'}}>
+              <button className="btn primary" onClick={()=>rebuild(size)}>🔀 Nueva mezcla</button>
+              <button className="btn" onClick={()=>setActiveDir(d=>d==="across"?"down":"across")}>🧭 Dirección: <b> {activeDir==="across"?"Horizontal":"Vertical"}</b></button>
+              <button className="btn" onClick={clearAll}>🧹 Limpiar</button>
+              <button className="btn" onClick={checkErrors}>✅ Validar</button>
+              <button className="btn" onClick={()=>reveal("letter")}>👁 Revelar letra</button>
+              <button className="btn" onClick={()=>reveal("word")}>👁 Revelar palabra</button>
+              <button className="btn" onClick={()=>reveal("puzzle")}>👁 Revelar todo</button>
+            </div>
+
+            <div className="grid" style={{gridTemplateColumns:`repeat(${puzzle.size}, var(--cell))`, gridTemplateRows:`repeat(${puzzle.size}, var(--cell))`}}>
+              {puzzle.cells.map((cell, idx)=>{
+                const isActiveWordCell = activeWordCells.includes(idx);
+                const isActive = activeCell===idx;
+                const wrong = showErrors && !cell.block && cell.value && cell.value !== cell.solution;
+                const solvedCell = cell.value && cell.value === cell.solution;
+                return (
+                  <div key={idx}
+                       className={"cell"+(cell.block?" block":"")+(isActiveWordCell&&!cell.block?" active-word":"")+(isActive&&!cell.block?" active-cell":"")}
+                       onClick={()=>focusCell(idx)}>
+                    {!cell.block && <span className={"val "+(wrong?"err": solvedCell?"ok":"")}>{cell.value||""}</span>}
+                    {!cell.block && (()=>{ const num=cellNumber(cell); return num? <span className="num">{num}</span> : null; })()}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="status">
+              {isSolved ? <div className="panel" style={{color:'#065f46', borderColor:'#bbf7d0', background:'#f0fdf4'}}>¡Completado! Tiempo: <b>{timer.label}</b>. <button className="btn" onClick={()=>setShowRecords(true)}>Ver récords</button></div>
+                      : <span className="muted">Tip: <span className="kbd">Espacio</span> cambia dirección, <span className="kbd">Tab</span> va a la siguiente pista.</span>}
+            </div>
+          </div>
+
+          <div>
+            <div className="toolbar">
+              <h2>Pistas</h2>
+              <div className="muted">Tamaño: {puzzle.size}×{puzzle.size} · Palabras: {puzzle.acrossClues.length + puzzle.downClues.length}</div>
+            </div>
+
+            <div className="clues">
+              <div>
+                <h3>Horizontales</h3>
+                <div>
+                  {puzzle.acrossClues.map(c=> (
+                    <div key={c.id}
+                         className={"clue " + (activeWordId===c.id && activeDir==="across" ? "active":"")}
+                         onClick={()=>{ setActiveDir("across"); setActiveWordId(c.id); const firstIdx = (()=>{ const w=puzzle.placed.find(w=>w.id===c.id); const dr=0, dc=1; return w? (w.row*puzzle.size + w.col) : 0; })(); setActiveCell(firstIdx); }}>
+                      <span><b>{c.number}.</b> {c.clue}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <h3>Verticales</h3>
+                <div>
+                  {puzzle.downClues.map(c=> (
+                    <div key={c.id}
+                         className={"clue " + (activeWordId===c.id && activeDir==="down" ? "active":"")}
+                         onClick={()=>{ setActiveDir("down"); setActiveWordId(c.id); const firstIdx = (()=>{ const w=puzzle.placed.find(w=>w.id===c.id); return w? (w.row*puzzle.size + w.col) : 0; })(); setActiveCell(firstIdx); }}>
+                      <span><b>{c.number}.</b> {c.clue}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="panel" style="margin-top:8px">
+              <div className="muted">Banco de palabras ampliado (55+ términos del Libro de Mormón). Respuestas sin tildes para facilitar el input.</div>
+            </div>
+          </div>
+
+          {showRecords && (
+            <div className="modal-backdrop">
+              <div className="modal">
+                <div className="toolbar">
+                  <h3>Centro de Récords</h3>
+                  <button className="btn" onClick={()=>setShowRecords(false)}>Cerrar</button>
+                </div>
+                {lastResult && (
+                  <div className="panel" style={{marginBottom:'8px'}}>
+                    {lastResult.isBest? "¡Nuevo récord personal! " : "Resultado registrado: "}
+                    Tiempo {formatSeconds(lastResult.rec.seconds)} · Tamaño {lastResult.rec.size}×{lastResult.rec.size} · Palabras {lastResult.rec.words}
+                  </div>
+                )}
+                <div className="muted" style={{marginBottom:'6px'}}>Mejores tiempos (top 10):</div>
+                <div style="max-height:260px; overflow:auto; border:1px solid var(--border); border-radius:12px;">
+                  <table>
+                    <thead><tr><th>Tiempo</th><th>Tamaño</th><th>Palabras</th><th>Fecha</th></tr></thead>
+                    <tbody id="rec-rows"></tbody>
+                  </table>
+                </div>
+                <div className="muted" style={{marginTop:'8px'}}>Los récords se guardan localmente en tu navegador.</div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function RecordsTableEffect({ records }){
+      React.useEffect(()=>{
+        const host = document.getElementById("rec-rows");
+        if(!host) return;
+        host.innerHTML = "";
+        (records.slice(0,10)).forEach(r=>{
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td><b>${formatSeconds(r.seconds)}</b></td><td>${r.size}×${r.size}</td><td>${r.words}</td><td>${new Date(r.date).toLocaleString()}</td>`;
+          host.appendChild(tr);
+        });
+        if(records.length===0){
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td colspan="4" style="text-align:center; color:#6b7280; padding:12px">Aún no hay récords. ¡Juega una partida!</td>`;
+          host.appendChild(tr);
+        }
+      },[records]);
+      return null;
+    }
+
+    function Root(){
+      const [records, setRecords] = React.useState(loadRecords());
+      React.useEffect(()=>{
+        const h = (e)=>{ if(e.key===STORAGE_KEY){ try{ setRecords(JSON.parse(e.newValue||"[]")); }catch{} } };
+        window.addEventListener("storage", h); return ()=>window.removeEventListener("storage", h);
+      },[]);
+      return (<>
+        <App />
+        <RecordsTableEffect records={records} />
+      </>);
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("app"));
+    root.render(<Root />);
+  </script>
+</body>
+</html>
